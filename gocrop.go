@@ -21,17 +21,8 @@ import (
 )
 
 type Response struct {
+	Success         bool   `json:"success"`
 	CroppedImageUrl string `json:"cropped_image_url"`
-}
-
-type Image struct {
-	Bucket        string `json:"bucket"`
-	CroppedBucket string `json:"cropped_bucket"`
-	Key           string `json:"key"`
-	CroppedKey    string `json:"cropped_key"`
-	FileName      string `json:"filename"`
-	Path          string `json:"path"`
-	CroppedPath   string `json:"cropped_path"`
 }
 
 // type SubImager is used by smartcrop to hold the cropped image
@@ -40,86 +31,111 @@ type SubImager interface {
 	SubImage(r image.Rectangle) image.Image
 }
 
-func downloadImage(bucket string, key string) (Image, error) {
-	image = Image{bucket, key, nil, nil}
+type Image struct {
+	err error
+	// S3 Bucket
+	Bucket        string `json:"bucket"`
+	CroppedBucket string `json:"cropped_bucket"`
+	// S3 Key
+	Key        string `json:"key"`
+	CroppedKey string `json:"cropped_key"`
+	// Filesystem information
+	FileName    string `json:"filename"`
+	Path        string `json:"path"`
+	CroppedPath string `json:"cropped_path"`
+}
 
+func (img *Image) downloadImage() {
+	// Abstract error checking
+	if img.err != nil {
+		return
+	}
 	// Create a file to write the S3 Object contents to
-	image_uuid = string(uuid.NewV4())
-	file_name = fmt.Sprintf("%s%s", image_uuid, image.Key)
+	img_uuid = string(uuid.NewV4())
+	file_name = fmt.Sprintf("%s%s", img_uuid, img.Key)
 	file_path = "/tmp/" + file_name
 
 	file, err := os.Create(file_path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create file %q, %v", file_path, err)
+		img.err = fmt.Errorf("Failed to create file %q: %v", file_path, err)
+		return
 	}
 
 	// Add the name and path to our final image object
-	image.Filename = file_name
-	image.Path = file_path
+	img.Filename = file_name
+	img.Path = file_path
 
 	// Write the contents of S3 Object to the file
 	bytes, err := downloader.Download(file, &s3.GetObjectInput{
-		Bucket: aws.String(image.Bucket),
-		Key:    aws.String(image.Key),
+		Bucket: aws.String(img.Bucket),
+		Key:    aws.String(img.Key),
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to download image, %v", err)
+		img.err = fmt.Errorf("Failed to download image: %v", err)
+		return
 	}
 
 	fmt.Printf("downloaded image, %d bytes\n", bytes)
-
-	return image, nil
 }
 
-func cropImage(image Image) (Image, err) {
-	file, _ = os.Open(image.Path)
+func (img *Image) cropImage() err {
+	if img.err != nil {
+		return
+	}
+
+	file, _ = os.Open(&img.Path)
 	defer file.Close()
 
-	decoded_image, _, err = image.Decode(file)
+	decoded_img, _, err = image.Decode(file)
 	if err != nil {
-		return nil, fmt.Errorf(err)
+		img.err = err
+		return
 	}
 
 	crop_analyzer := smartcrop.NewAnalyzer(nfnt.NewDefaultResizer())
-	best_crop, _ := analyzer.FindBestCrop(decoded_image, 500, 500)
+	best_crop, _ := analyzer.FindBestCrop(decoded_img, 500, 500)
 
-	cropped_image := decoded_image.(SubImager).SubImage(best_crop)
+	cropped_img := cropped_img.(SubImager).SubImage(best_crop)
+	cropped_img_path = "/tmp/resized-" + img.FileName
 
-	cropped_image_filename = "resized-" + image.FileName
-	cropped_image_filepath = "/tmp/" + cropped_image_filename
-
-	cropped_image_file, err := os.Create(cropped_image_filepath)
-	defer cropped_image_file.Close()
+	cropped_img_file, err := os.Create(cropped_img_path)
+	defer cropped_img_file.Close()
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to create file %q, %v", cropped_image_filepath, err)
+		img.err = fmt.Errorf("failed to create file %q, %v", cropped_img_path, err)
+		return
 	}
 
-	jpeg.Encode(cropped_image_file, cropped_image, &jpeg.Options{Quality: 100})
-	image.CroppedPath = cropped_image_filepath
-	return image
+	jpeg.Encode(cropped_img_file, cropped_img, &jpeg.Options{Quality: 100})
+	img.CroppedPath = cropped_img_path
 }
 
-func uploadCroppedImageToS3(image Image) (string, err) {
-	image_file, err := os.Open(image.CroppedPath)
+func (img *Image) uploadCroppedImageToS3() (string, err) {
+	if img.err != nil {
+		return
+	}
+
+	img_file, err := os.Open(img.CroppedPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file %q, %v", filename, err)
+		img.err = fmt.Errorf("failed to open file %q, %v", filename, err)
+		return
 	}
 
 	// Upload the file to S3.
 	result, err := uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(image.ResizedBucket),
-		Key:    aws.String(image.CroppedKey),
-		Body:   image_file,
+		Bucket: aws.String(img.ResizedBucket),
+		Key:    aws.String(img.CroppedKey),
+		Body:   img_file,
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to upload file, %v", err)
+		img.err = fmt.Errorf("failed to upload file, %v", err)
+		return
 	}
 
 	fmt.Printf("file uploaded to, %s\n", aws.StringValue(result.Location))
-	return image.CroppedKey, nil
+	return img.CroppedKey, nil
 }
 
 func handler(ctx context, s3Event events.S3Event) (Response, err) {
@@ -135,25 +151,15 @@ func handler(ctx context, s3Event events.S3Event) (Response, err) {
 	resized_bucket := "resized-" + s3.Bucket.Name
 	key := s3.Bucket.Key
 
-	// pass metadata to the image download/crop/upload workflow
-	downloaded_image, err := downloadImage(bucket, key)
-	if err != nil {
-		return nil, err
+	img, err := Image{bucket, key, nil, nil}
+	img.downloadImage()
+	img.cropImage()
+	img.uploadCroppedImageToS3()
+	if img.err != nil {
+		return nil, img.err
 	}
 
-	cropped_image, err := cropImage(downloaded_image)
-	if err != nil {
-		return nil, err
-	}
-
-	upload_success, err := uploadCroppedImageToS3(cropped_image)
-	if err != nil {
-		return nil, err
-	}
-
-	response := Response{cropped_image.CroppedKey}
-
-	return response, nil
+	return Response{img.CroppedKey}, nil
 }
 
 func main() {
