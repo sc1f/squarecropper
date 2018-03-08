@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-lambda-go"
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/muesli/smartcrop"
 	"github.com/muesli/smartcrop/nfnt"
-	"github.com/museli/smartcrop"
 	"github.com/twinj/uuid"
 	"image"
 	"image/jpeg"
@@ -36,6 +36,7 @@ type Image struct {
 
 // type SubImager is used by smartcrop to hold the cropped image
 type SubImager interface {
+	// SubImage returns an image object from SmartCrop
 	SubImage(r image.Rectangle) image.Image
 }
 
@@ -92,7 +93,7 @@ func cropImage(image Image) (Image, err) {
 	defer cropped_image_file.Close()
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to save file %q, %v", cropped_image_filepath, err)
+		return nil, fmt.Errorf("failed to create file %q, %v", cropped_image_filepath, err)
 	}
 
 	jpeg.Encode(cropped_image_file, cropped_image, &jpeg.Options{Quality: 100})
